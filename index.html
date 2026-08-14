@@ -417,6 +417,223 @@
   </div>
 </div>
 
+  <script>
+  // ==========================================
+  // 1. 카카오 REST API 키 설정
+  // ==========================================
+  const KAKAO_API_KEY = "여기에_발급받은_REST_API_KEY를_입력하세요"; 
+
+  // ==========================================
+  // 2. Google Apps Script 웹앱 URL (설문 제출용)
+  // ==========================================
+  const SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbx1WsP5-4GZqnZyvxz7fJqCSLkCkfwOVjbgDosXvrkW1Xsfw5p73WhG_GBoTN7wydEvdQ/exec";
+
+  let debounceTimer = null;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const bookTitleInput = document.getElementById('bookTitle');
+    const authorInput = document.getElementById('author');
+    const publisherInput = document.getElementById('publisher');
+    const priceInput = document.getElementById('price');
+    const dropdown = document.getElementById('bookDropdown');
+    const userTypeSelect = document.getElementById('userType');
+    const studentNumWrap = document.getElementById('studentNumWrap');
+    const studentNumInput = document.getElementById('studentNum');
+    const form = document.getElementById('bookForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const submitStatus = document.getElementById('submitStatus');
+
+    // ------------------------------------------
+    // 신분 선택 시 학번 필드 토글
+    // ------------------------------------------
+    userTypeSelect.addEventListener('change', () => {
+      if (userTypeSelect.value === '학생') {
+        studentNumWrap.classList.add('open');
+        studentNumInput.setAttribute('required', 'required');
+      } else {
+        studentNumWrap.classList.remove('open');
+        studentNumInput.removeAttribute('required');
+        studentNumInput.value = '';
+      }
+    });
+
+    // ------------------------------------------
+    // 도서명 입력 시 디바운스 처리 후 카카오 API 검색
+    // ------------------------------------------
+    bookTitleInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      clearTimeout(debounceTimer);
+
+      if (!query) {
+        closeDropdown();
+        return;
+      }
+
+      debounceTimer = setTimeout(() => {
+        searchBooks(query);
+      }, 300);
+    });
+
+    // ------------------------------------------
+    // 카카오 도서 검색 API 호출 함수
+    // ------------------------------------------
+    async function searchBooks(query) {
+      if (!KAKAO_API_KEY || KAKAO_API_KEY.includes("여기에_발급받은")) {
+        dropdown.innerHTML = `<div class="dd-status err">⚠️ 스크립트 코드에 카카오 REST API 키를 입력해 주세요.</div>`;
+        dropdown.classList.add('open');
+        return;
+      }
+
+      dropdown.innerHTML = `<div class="dd-status">검색 중...</div>`;
+      dropdown.classList.add('open');
+
+      try {
+        const response = await fetch(`https://dapi.kakao.com/v3/search/book?query=${encodeURIComponent(query)}&size=7`, {
+          headers: {
+            Authorization: `KakaoAK ${KAKAO_API_KEY}`
+          }
+        });
+
+        if (!response.ok) throw new Error('API 호출 실패');
+
+        const data = await response.json();
+        renderDropdown(data.documents);
+      } catch (err) {
+        console.error(err);
+        dropdown.innerHTML = `<div class="dd-status err">도서 검색 중 오류가 발생했습니다.</div>`;
+      }
+    }
+
+    // ------------------------------------------
+    // 검색 결과 드롭다운 렌더링
+    // ------------------------------------------
+    function renderDropdown(books) {
+      if (!books || books.length === 0) {
+        dropdown.innerHTML = `
+          <div class="dd-status">검색 결과가 없습니다.</div>
+          <div class="dd-manual" onclick="closeDropdown()"> 직접 입력하기</div>
+        `;
+        return;
+      }
+
+      dropdown.innerHTML = '';
+      books.forEach(book => {
+        const item = document.createElement('div');
+        item.className = 'dd-item';
+        
+        // 저자 목록 가공
+        const authors = book.authors.join(', ') || '저자 미상';
+        const price = book.price ? book.price.toLocaleString() + '원' : '가격 정보 없음';
+        const thumbnail = book.thumbnail || 'https://via.placeholder.com/34x48?text=No+Img';
+
+        item.innerHTML = `
+          <img src="${thumbnail}" alt="표지">
+          <div class="dd-text">
+            <div class="dd-title">${escapeHtml(book.title)}</div>
+            <div class="dd-sub">${escapeHtml(authors)} | ${escapeHtml(book.publisher)} | ${price}</div>
+          </div>
+        `;
+
+        // 항목 클릭 시 입력창 자동 채우기
+        item.addEventListener('click', () => {
+          bookTitleInput.value = book.title;
+          authorInput.value = authors;
+          publisherInput.value = book.publisher;
+          priceInput.value = book.price ? book.price : '';
+          
+          toggleAutofillTags(true);
+          closeDropdown();
+        });
+
+        dropdown.appendChild(item);
+      });
+
+      const manualBtn = document.createElement('div');
+      manualBtn.className = 'dd-manual';
+      manualBtn.innerText = ' 목록에 없음 (직접 입력하기)';
+      manualBtn.addEventListener('click', closeDropdown);
+      dropdown.appendChild(manualBtn);
+    }
+
+    function closeDropdown() {
+      dropdown.classList.remove('open');
+      dropdown.innerHTML = '';
+    }
+
+    // 바깥 영역 클릭 시 드롭다운 닫기
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.search-wrap')) {
+        closeDropdown();
+      }
+    });
+
+    // 자동채움 태그 표시/숨김
+    function toggleAutofillTags(show) {
+      document.querySelectorAll('.autofill-tag').forEach(tag => {
+        if (show) tag.classList.add('show');
+        else tag.classList.remove('show');
+      });
+    }
+
+    // XSS 방지용 문자열 이스케이프
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      })[m]);
+    }
+
+    // ------------------------------------------
+    // 폼 제출 처리 (Google Apps Script 통신)
+    // ------------------------------------------
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      submitBtn.disabled = true;
+      submitStatus.className = 'submit-status show pending';
+      submitStatus.innerText = '신청서를 제출하는 중입니다...';
+
+      const formData = {
+        userType: userTypeSelect.value,
+        studentNum: studentNumInput.value,
+        userName: document.getElementById('userName').value,
+        bookTitle: bookTitleInput.value,
+        author: authorInput.value,
+        publisher: publisherInput.value,
+        price: priceInput.value,
+        reason: document.getElementById('reason').value
+      };
+
+      try {
+        const resp = await fetch(SHEET_WEBAPP_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(formData)
+        });
+
+        const resData = await resp.json();
+
+        if (resData.result === 'success') {
+          submitStatus.className = 'submit-status show ok';
+          submitStatus.innerText = '🎉 구입 희망도서 신청이 성공적으로 완료되었습니다!';
+          form.reset();
+          studentNumWrap.classList.remove('open');
+          toggleAutofillTags(false);
+        } else {
+          throw new Error(resData.message || '제출 실패');
+        }
+      } catch (err) {
+        console.error(err);
+        submitStatus.className = 'submit-status show err';
+        submitStatus.innerText = '❌ 제출 중 오류가 발생했습니다. 다시 시도해 주세요.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  });
+</script>
+  
+
+/*  
 <script>
 /* ============ 설정 ============
    알라딘 API 키는 더 이상 이 파일에 없습니다. (Apps Script 서버 쪽에 보관)
@@ -669,3 +886,4 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 </script>
 </body>
 </html>
+*/
